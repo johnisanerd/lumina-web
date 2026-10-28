@@ -10,7 +10,7 @@ if (!APIFY_TOKEN) {
     process.exit(1);
 }
 
-const ACTOR = "epctex~yelp-scraper";
+const ACTOR = "johnvc~yelp-search-api";
 
 const INPUT_FILE = path.join(__dirname, "nyc_region_final.json");
 const OUTPUT_FILE = path.join(__dirname, "nyc_region_with_yelp.json");
@@ -21,7 +21,7 @@ console.log("🔵 Loaded venues:", venues.length);
 // Apify client
 const apifyClient = axios.create({
     baseURL: "https://api.apify.com/v2",
-    timeout: 120000,
+    timeout: 300000,
 });
 
 // Scrape Yelp using run-sync endpoint
@@ -30,16 +30,20 @@ async function scrapeYelp(name) {
         const response = await apifyClient.post(
             `/acts/${ACTOR}/run-sync-get-dataset-items?token=${APIFY_TOKEN}`,
             {
-                search: name,
-                searchLocation: "New York, NY",
-                maxItems: 1,
-                includeReviews: true,
-                includePhotos: true,
-                proxy: { useApifyProxy: true }
+                search_term: name,
+                location: "New York, NY",
+                max_pages: 1
             }
         );
 
-        return response.data[0] || null;
+        // One dataset item per search page; businesses are in organic_results
+        const page = response.data[0];
+        if (!page || page.error) {
+            if (page) console.log("❌ Yelp search error:", page.error_message || page.error);
+            return null;
+        }
+
+        return (page.organic_results || [])[0] || null;
 
     } catch (err) {
         console.log("❌ Yelp scrape error:", err.response?.data || err.message);
@@ -59,19 +63,19 @@ async function run() {
         const yelp = await scrapeYelp(venueName);
 
         if (yelp) {
-            console.log(`   ✔ Yelp match found: ${yelp.name || venueName}`);
+            console.log(`   ✔ Yelp match found: ${yelp.title || venueName}`);
 
             v.yelp = {
-                name: yelp.name || null,
+                name: yelp.title || null,
                 rating: yelp.rating || null,
-                review_count: yelp.reviewCount || null,
+                review_count: yelp.reviews || null,
                 price: yelp.price || null,
                 categories: yelp.categories || [],
-                photos: yelp.photos || [],
-                website: yelp.website || null,
-                url: yelp.url || null,
+                photos: yelp.thumbnail ? [yelp.thumbnail] : [],
+                website: null,
+                url: yelp.link || null,
                 address: yelp.address || null,
-                reviews: yelp.reviews || []
+                reviews: []
             };
         } else {
             console.log(`   ⚠️ No Yelp data`);
