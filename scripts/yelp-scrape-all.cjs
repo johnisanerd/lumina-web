@@ -2,8 +2,12 @@ const Database = require('better-sqlite3');
 const fs = require('fs');
 
 const db = new Database('/opt/viberyte/lumina-web/data/lumina.db');
-const APIFY_API_KEY = 'apify_api_N5NyIilgQUceEgq7oC3p4nFiKjkt5t0ctmel';
-const ACTOR_ID = 'epctex~yelp-scraper';
+const APIFY_API_KEY = process.env.APIFY_API_TOKEN;
+if (!APIFY_API_KEY) {
+  console.error('Missing APIFY_API_TOKEN');
+  process.exit(1);
+}
+const ACTOR_ID = 'johnvc~yelp-search-api';
 
 // Yelp category → Lumina lens
 const YELP_TO_LENS = {
@@ -56,18 +60,11 @@ async function sleep(ms) {
   return new Promise(resolve => setTimeout(resolve, ms));
 }
 
-async function startYelpRun(searchTerms, location) {
+async function startYelpRun(searchTerm, location) {
   const input = {
-    searchTerms: searchTerms,
-    locationFullText: location,
-    maxItems: searchTerms.length * 2,
-    includeReviews: false,
-    includePhotos: false,
-    // Add required proxy config
-    proxy: {
-      useApifyProxy: true,
-      apifyProxyGroups: ["RESIDENTIAL"]
-    }
+    search_term: searchTerm,
+    location: location,
+    max_pages: 1,
   };
 
   const response = await fetch(`https://api.apify.com/v2/acts/${ACTOR_ID}/runs?token=${APIFY_API_KEY}`, {
@@ -108,7 +105,19 @@ async function waitForRun(runId) {
 
 async function getRunResults(runId) {
   const response = await fetch(`https://api.apify.com/v2/actor-runs/${runId}/dataset/items?token=${APIFY_API_KEY}`);
-  return response.json();
+  const pages = await response.json();
+  // One dataset item per search page; businesses are in organic_results
+  const businesses = [];
+  for (const page of pages) {
+    if (page.error) {
+      console.error('Yelp search error:', page.error_message || page.error);
+      continue;
+    }
+    for (const biz of page.organic_results || []) {
+      businesses.push({ ...biz, name: biz.title });
+    }
+  }
+  return businesses;
 }
 
 function normalizeString(str) {
@@ -201,14 +210,17 @@ async function main() {
       console.log(`[Batch ${Math.floor(i/BATCH_SIZE) + 1}/${Math.ceil(cityVenues.length/BATCH_SIZE)}] ${batch.length} venues...`);
       
       try {
-        const runId = await startYelpRun(batch.map(v => v.name), location);
-        if (!runId) continue;
-        
-        process.stdout.write('Waiting');
-        if (!await waitForRun(runId)) continue;
-        console.log('');
-        
-        const results = await getRunResults(runId);
+        const results = [];
+        for (const venue of batch) {
+          const runId = await startYelpRun(venue.name, location);
+          if (!runId) continue;
+
+          process.stdout.write('Waiting');
+          if (!await waitForRun(runId)) continue;
+          console.log('');
+
+          results.push(...await getRunResults(runId));
+        }
         console.log(`Got ${results.length} results`);
         allResults.push(...results);
         
