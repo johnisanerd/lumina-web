@@ -9,7 +9,7 @@ if (!APIFY_TOKEN) {
   process.exit(1);
 }
 
-const ACTOR = "epctex~yelp-scraper";
+const ACTOR = "johnvc~yelp-search-api";
 const INPUT_FILE = path.join(__dirname, "nyc_region_final.json");
 
 const venues = JSON.parse(fs.readFileSync(INPUT_FILE, "utf8"));
@@ -41,25 +41,32 @@ console.log("📦 Total chunks:", venueChunks.length);
         encodeURIComponent("New York, NY")
     }));
 
-    try {
-      const res = await axios.post(
-        `https://api.apify.com/v2/acts/${ACTOR}/run-sync-get-dataset-items?token=${APIFY_TOKEN}`,
-        {
-          startUrls,
-          includeReviews: false,
-          includePhotos: false,
-          maxItems: 200,
-          proxy: { useApifyProxy: true }
-        },
-        { timeout: 1800000 }
-      );
+    // One run per search URL; each dataset item is a search page
+    for (const { url } of startUrls) {
+      try {
+        const res = await axios.post(
+          `https://api.apify.com/v2/acts/${ACTOR}/run-sync-get-dataset-items?token=${APIFY_TOKEN}`,
+          {
+            search_url: url,
+            max_pages: 1
+          },
+          { timeout: 1800000 }
+        );
 
-      console.log(`   ✔ Chunk complete: ${res.data.length} items`);
-      allResults = allResults.concat(res.data);
+        for (const page of res.data) {
+          if (page.error) {
+            console.log("   ❌ Search FAILED:", page.error_message || page.error);
+            continue;
+          }
+          allResults = allResults.concat(page.organic_results || []);
+        }
 
-    } catch (err) {
-      console.log("   ❌ Chunk FAILED:", err.response?.data || err.message);
+      } catch (err) {
+        console.log("   ❌ Search FAILED:", err.response?.data || err.message);
+      }
     }
+
+    console.log(`   ✔ Chunk complete: ${allResults.length} items so far`);
 
     await new Promise(r => setTimeout(r, 3000)); // pause between chunks
   }
